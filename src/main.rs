@@ -1,11 +1,13 @@
 use core::str;
-use std::{fs, io};
+use std::io::{BufReader, Read, Write};
+use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
 use model::Address;
 
+mod macros;
 mod model;
 
 fn main() {
@@ -51,15 +53,31 @@ fn proxy_src_to_dest(src_conn: TcpStream, target_conn: TcpStream) {
     let src_arc = Arc::new(src_conn);
     let target_arc = Arc::new(target_conn);
 
-    let (mut src_tx, mut src_rx) = (src_arc.try_clone().unwrap(), src_arc.try_clone().unwrap());
-    let (mut target_tx, mut target_rx) = (target_arc.try_clone().unwrap(), target_arc.try_clone().unwrap());
+    let (src_tx, src_rx) = (src_arc.try_clone().unwrap(), src_arc.try_clone().unwrap());
+    let (target_tx, target_rx) = (target_arc.try_clone().unwrap(), target_arc.try_clone().unwrap());
 
     let connections = vec![
-        thread::spawn(move || io::copy(&mut src_tx, &mut target_rx).unwrap()),
-        thread::spawn(move || io::copy(&mut target_tx, &mut src_rx).unwrap()),
+        thread::spawn(move || copy_conn(src_tx, target_rx, "write proxy to target")),
+        thread::spawn(move || copy_conn(target_tx, src_rx, "receive proxy from target")),
     ];
 
     for t in connections {
         t.join().unwrap();
+    }
+}
+
+fn copy_conn(src: TcpStream, dest: TcpStream, log: &str) {
+    let proxy = src.try_clone().expect("Cannot clone stream");
+    let mut proxy_reader = BufReader::new(&proxy);
+    let target = &mut dest.try_clone().expect("Cannot clone stream");
+
+    let mut buffer = [0; 1024];
+    loop {
+        let nbytes = try_or_skip!(proxy_reader.read(&mut buffer));
+        if nbytes == 0 {
+            break;
+        }
+        println!("[{:?}] {}: {:?}", try_or_skip!(target.peer_addr()), log, &buffer[..nbytes]); // log transferred message
+        _ = target.write(&buffer[..nbytes]);
     }
 }
