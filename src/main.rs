@@ -2,7 +2,6 @@ use core::str;
 use std::io::{BufReader, Read, Write};
 use std::fs;
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
 use std::thread;
 
 use model::Address;
@@ -21,11 +20,8 @@ fn main() {
     
         println!("Proxing TCP connection from {} to {}", proxy_addr, to_addr);
 
-        let listener_arc = Arc::new(listener);
-        let listener_tx = listener_arc.try_clone().unwrap();
-
         processes.push(thread::spawn(
-            move || handle_incomming_message(listener_tx, &address.target)
+            move || handle_incomming_message(listener, &address.target)
         ));
     }
 
@@ -50,15 +46,19 @@ fn handle_incomming_message(listener: TcpListener, to_addr: &str) {
 }
 
 fn proxy_src_to_dest(src_conn: TcpStream, target_conn: TcpStream) {
-    let src_arc = Arc::new(src_conn);
-    let target_arc = Arc::new(target_conn);
+    let (src_tx, src_rx) = (src_conn.try_clone().unwrap(), src_conn.try_clone().unwrap());
+    let (target_tx, target_rx) = (target_conn.try_clone().unwrap(), target_conn.try_clone().unwrap());
 
-    let (src_tx, src_rx) = (src_arc.try_clone().unwrap(), src_arc.try_clone().unwrap());
-    let (target_tx, target_rx) = (target_arc.try_clone().unwrap(), target_arc.try_clone().unwrap());
+    let src_to_target_log = format!("[{}:{}] to [{}:{}]", 
+        src_rx.peer_addr().unwrap().ip().to_string(), src_rx.peer_addr().unwrap().port(), 
+        target_rx.peer_addr().unwrap().ip().to_string(), target_rx.peer_addr().unwrap().port());
+    let target_to_src_log = format!("[{}:{}] to [{}:{}]", 
+        target_rx.peer_addr().unwrap().ip().to_string(), target_rx.peer_addr().unwrap().port(), 
+        src_rx.peer_addr().unwrap().ip().to_string(), src_rx.peer_addr().unwrap().port());
 
     let connections = vec![
-        thread::spawn(move || copy_conn(src_tx, target_rx, "write proxy to target")),
-        thread::spawn(move || copy_conn(target_tx, src_rx, "receive proxy from target")),
+        thread::spawn(move || copy_conn(src_tx, target_rx, src_to_target_log)),
+        thread::spawn(move || copy_conn(target_tx, src_rx, target_to_src_log)),
     ];
 
     for t in connections {
@@ -66,7 +66,7 @@ fn proxy_src_to_dest(src_conn: TcpStream, target_conn: TcpStream) {
     }
 }
 
-fn copy_conn(src: TcpStream, dest: TcpStream, log: &str) {
+fn copy_conn(src: TcpStream, dest: TcpStream, log: String) {
     let proxy = src.try_clone().expect("Cannot clone stream");
     let mut proxy_reader = BufReader::new(&proxy);
     let target = &mut dest.try_clone().expect("Cannot clone stream");
@@ -77,7 +77,7 @@ fn copy_conn(src: TcpStream, dest: TcpStream, log: &str) {
         if nbytes == 0 {
             break;
         }
-        println!("[{:?}] {}: {:?}", try_or_skip!(target.peer_addr()), log, &buffer[..nbytes]); // log transferred message
+        println!("{} => {:?}", log, &buffer[..nbytes]); // log transferred message
         _ = target.write(&buffer[..nbytes]);
     }
 }
